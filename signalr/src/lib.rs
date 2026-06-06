@@ -163,7 +163,6 @@ struct Completion {
 #[serde(rename_all = "camelCase")]
 struct InvocationMessage {
     r#type: i32,
-    invocation_id: String,
     target: String,
     arguments: Vec<Value>,
 }
@@ -200,17 +199,25 @@ pub async fn subscribe(
 
     debug!("subscribe invocation sent, waiting for completion...");
 
-    let response = client
-        .stream
-        .next()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("No response received from server"))??;
+    let completion = loop {
+        let response = client
+            .stream
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No response received from server"))??;
 
-    let Message::Text(txt) = response else {
-        return Err(anyhow::anyhow!("Unexpected message type: {:?}", response));
+        let Message::Text(txt) = response else {
+            continue;
+        };
+
+        let Ok(value) = deserialize::<Value>(&txt) else {
+            continue;
+        };
+
+        if value.get("type").and_then(|t| t.as_i64()) == Some(COMPLETION as i64) {
+            break deserialize::<Completion>(&txt)?;
+        }
     };
-
-    let completion = deserialize::<Completion>(&txt)?;
 
     if completion.r#type != COMPLETION {
         return Err(anyhow::anyhow!(
@@ -283,7 +290,7 @@ pub fn listen(client: SignalrClient) -> impl Stream<Item = Vec<UpdateArgs>> {
 
                 if invocation.r#type != INVOCATION || invocation.target != "feed" {
                     continue;
-                }
+                }     
 
                 let (topic, data, timestamp) = invocation.arguments;
 
